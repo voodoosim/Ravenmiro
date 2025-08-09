@@ -1,0 +1,22 @@
+{
+  "api_id": 0,
+  "api_hash": "",
+  "session_string": "",
+  "channel_mappings": {},
+  "message_cache": {},
+  "stats": {
+    "messages_mirrored": 0,
+    "media_mirrored": 0,
+    "errors": 0,
+    "start_time": null
+  },
+  "options": {
+    "mirror_enabled": true,
+    "mirror_text": true,
+    "mirror_media": true,
+    "mirror_edits": true,
+    "mirror_deletes": true,
+    "bypass_restriction": true,
+    "cache_media": false
+  }
+}

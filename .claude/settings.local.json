@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__memory__search_nodes",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__get-library-docs",
+      "mcp__filesystem__create_directory",
+      "mcp__filesystem__write_file",
+      "Bash(sed:*)",
+      "Bash(python -m ruff check:*)",
+      "Bash(python -m mypy:*)",
+      "Bash(python -m pylint:*)",
+      "Bash(python -c:*)",
+      "Bash(grep:*)",
+      "Bash(awk:*)",
+      "Bash(python:*)",
+      "mcp__sequential-thinking__sequentialthinking",
+      "Bash(dir:*)"
+    ],
+    "deny": []
+  }
+}

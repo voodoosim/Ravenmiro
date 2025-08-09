@@ -1,0 +1,27 @@
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "telethon.*"
+ignore_missing_imports = true
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "colorama"
+ignore_missing_imports = true
+
+[tool.pylint.messages_control]
+disable = [
+    "import-error",
+    "import-outside-toplevel",
+    "too-few-public-methods",
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+]
+
+[tool.pylint.format]
+max-line-length = 100

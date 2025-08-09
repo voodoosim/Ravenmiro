@@ -1,0 +1,26 @@
+[MASTER]
+ignore=tests,test_*.py
+jobs=1
+persistent=no
+
+[MESSAGES CONTROL]
+disable=
+    import-error,
+    import-outside-toplevel,
+    too-few-public-methods,
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    invalid-name,
+    too-many-arguments,
+    too-many-locals,
+    too-many-branches,
+    too-many-statements,
+    too-many-instance-attributes
+
+[FORMAT]
+max-line-length=100
+indent-string='    '
+
+[EXCEPTIONS]
+overgeneral-exceptions=builtins.BaseException,builtins.Exception

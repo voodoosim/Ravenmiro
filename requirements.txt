@@ -1,0 +1,6 @@
+# Telegram Mirror Bot Requirements
+telethon>=1.30.0
+cryptg>=0.4.0  # Speed up encryption
+python-dotenv>=1.0.0  # Environment variables
+aiofiles>=23.0.0  # Async file operations
+colorama>=0.4.6  # Colored terminal output
