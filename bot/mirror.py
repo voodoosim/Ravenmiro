@@ -135,6 +135,13 @@ class MirrorEngine:
         if not target_chats:
             return
 
+        # Debug logging for media
+        if message.media:
+            logger.info(f"📸 Media detected: {type(message.media).__name__}")
+            if not self.config.get_option('mirror_media'):
+                logger.warning("Media mirroring is disabled")
+                return
+
         msg_id = f"{source_chat}_{message.id}"
         if msg_id in self.processing:
             return
@@ -578,18 +585,27 @@ class MirrorEngine:
         try:
             result = None
             
-            # Direct processing based on strategy - no queuing
-            if strategy == MirrorStrategy.BYPASS:
+            # Check for bypass restriction first
+            if message.restriction_reason and self.config.get_option('bypass_restriction'):
                 result = await self._mirror_restricted_media_enhanced(message, target_chat)
             elif message.media:
+                # Handle all media types
                 result = await self._mirror_media_instant(message, target_chat)
-            else:
+            elif message.message:
+                # Text only
                 result = await self._mirror_text_instant(message, target_chat)
+            else:
+                logger.warning("Message has no content to mirror")
+                return None
             
             if result:
                 # Cache the message mapping
                 self.config.cache_message(message.id, result.id, source_chat)
                 self.config.update_stats('messages_mirrored')
+                
+                # Update media stats if applicable
+                if message.media:
+                    self.config.update_stats('media_mirrored')
                 
                 # Log emoji detection
                 if message.entities:
@@ -632,21 +648,46 @@ class MirrorEngine:
     async def _mirror_media_instant(self, message: Message, target_chat: int) -> Optional[Message]:
         """Instant media mirroring with emoji preservation"""
         try:
-            # For restricted media, download and re-upload
+            # Check if bypass restriction is needed
             if message.restriction_reason and self.config.get_option('bypass_restriction'):
                 return await self._mirror_restricted_media_enhanced(message, target_chat)
             
-            # Direct forward for non-restricted media (fastest)
-            return await self.client.send_file(
-                target_chat,
-                message.media,
-                caption=message.message,
-                formatting_entities=message.entities,  # Preserves emojis in caption
-                silent=True
-            )
+            # Handle different media types
+            if isinstance(message.media, (MessageMediaPhoto, MessageMediaDocument)):
+                # Direct send for photos and documents
+                return await self.client.send_file(
+                    target_chat,
+                    message.media,
+                    caption=message.message or "",
+                    formatting_entities=message.entities,  # Preserves emojis in caption
+                    silent=True
+                )
+            elif isinstance(message.media, MessageMediaWebPage):
+                # Web preview - send as text with link preview
+                return await self.client.send_message(
+                    target_chat,
+                    message.message or "",
+                    formatting_entities=message.entities,
+                    link_preview=True,
+                    silent=True
+                )
+            else:
+                # Other media types - use generic send
+                return await self.client.send_file(
+                    target_chat,
+                    message.media,
+                    caption=message.message or "",
+                    formatting_entities=message.entities,
+                    silent=True
+                )
         except Exception as e:
             logger.error(f"Media instant mirror failed: {e}")
-            return None
+            # Try bypass method as fallback
+            try:
+                return await self._mirror_restricted_media_enhanced(message, target_chat)
+            except Exception as bypass_error:
+                logger.error(f"Bypass fallback also failed: {bypass_error}")
+                return None
     
     async def _mirror_to_target_fast(self, message: Message, source_chat: int, target_chat: int, strategy: MirrorStrategy):
         """Legacy fast mirroring function - redirects to instant"""
