@@ -89,7 +89,9 @@ class SimpleMenuHandler:
         if source_channel:
             try:
                 entity = await self.client.get_entity(source_channel)
-                name = getattr(entity, "title", "Unknown")
+                full_name = getattr(entity, "title", "Unknown")
+                # Safely truncate name
+                name = full_name[:20] if len(full_name) > 20 else full_name
                 if isinstance(entity, Channel):
                     if entity.broadcast:
                         source_info = f"📢 {name}"
@@ -109,7 +111,9 @@ class SimpleMenuHandler:
             for target_id in target_channels[:3]:  # Show first 3
                 try:
                     entity = await self.client.get_entity(target_id)
-                    name = getattr(entity, "title", "Unknown")[:20]
+                    full_name = getattr(entity, "title", "Unknown")
+                    # Safely truncate name
+                    name = full_name[:20] if len(full_name) > 20 else full_name
                     if isinstance(entity, Channel):
                         if entity.broadcast:
                             target_details.append(f"   📢 {name}")
@@ -130,7 +134,9 @@ class SimpleMenuHandler:
         if log_channel:
             try:
                 entity = await self.client.get_entity(log_channel)
-                name = getattr(entity, "title", "Unknown")
+                full_name = getattr(entity, "title", "Unknown")
+                # Safely truncate name
+                name = full_name[:20] if len(full_name) > 20 else full_name
                 log_info = f"📝 {name}"
             except Exception:
                 log_info = f"ID: {log_channel}"
@@ -138,23 +144,37 @@ class SimpleMenuHandler:
         mirror_enabled = self.config.get_option("mirror_enabled")
         mirror_status = "✅ 활성화" if mirror_enabled else "❌ 비활성화"
 
+        # Format source info for display
+        source_display = source_info.replace("📢 ", "").replace("👥 ", "") if source_info != "❌ 설정안됨" else "설정안됨"
+        
+        # Format target info for display (first target only for compact view)
+        if target_channels:
+            try:
+                first_target = await self.client.get_entity(target_channels[0])
+                target_name = getattr(first_target, "title", "Unknown")
+                target_display = target_name[:20] if len(target_name) > 20 else target_name
+                if len(target_channels) > 1:
+                    target_display += f" 외 {len(target_channels)-1}개"
+            except Exception:
+                target_display = f"{len(target_channels)}개 채널"
+        else:
+            target_display = "설정안됨"
+        
+        # Format log info for display
+        log_display = log_info.replace("📝 ", "") if log_info != "❌ 설정안됨" else "설정안됨"
+        
+        # Format mirror status
+        mirror_display = "활성화" if mirror_enabled else "비활성화"
+
         menu_text = f"""카피닌자🥷 까막 V.1
 
-═══════════════════════════
-📥 입력 (소스): {source_info}
-───────────────────────────
-📤 출력 (타겟): 
-{target_info}
-───────────────────────────
-📝 로그: {log_info}
-───────────────────────────
-🔄 미러링: {mirror_status}
-═══════════════════════════
+1. 입력설정   2. 출력설정
+3. 로그설정   4. 미러링 토글
 
-1. 입력 설정
-2. 출력 설정
-3. 로그 설정
-4. 미러링 토글
+입력 [{source_display}]
+출력 [{target_display}]
+미러링 [{mirror_display}]
+로그 [{log_display}]
 
 0. 종료"""
 

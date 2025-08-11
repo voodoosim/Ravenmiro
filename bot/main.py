@@ -29,7 +29,7 @@ from telethon.sessions import StringSession
 from .config import Config
 from .mirror import MirrorEngine
 from .session_handler import SessionManager
-from .simple_menu import SimpleMenuHandler
+from .menu_base import SimpleMenuHandler
 
 logging.basicConfig(
     level=logging.INFO,

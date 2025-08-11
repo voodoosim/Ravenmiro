@@ -400,29 +400,37 @@ class MirrorEngine:
     async def _mirror_direct(self, message: Message, target_chat: int) -> Optional[Message]:
         """Direct mirroring with custom emoji support"""
         try:
-            # Process custom emojis if present
-            processed_text = None
-            if message.message and message.entities:
-                from telethon.tl.types import MessageEntityCustomEmoji
-                has_custom_emoji = any(isinstance(e, MessageEntityCustomEmoji) for e in message.entities)
-                if has_custom_emoji:
-                    processed_text = await self._process_custom_emojis(message)
-            
             if message.media and self.config.get_option('bypass_restriction'):
                 return await self._mirror_restricted_media_enhanced(message, target_chat)
             elif message.media and self.config.get_option('mirror_media'):
                 return await self._mirror_media(message, target_chat)
             elif message.message and self.config.get_option('mirror_text'):
-                # Send with all entities including custom emojis
+                # Check for custom emojis in entities
+                if message.entities:
+                    from telethon.tl.types import MessageEntityCustomEmoji
+                    custom_emoji_count = sum(1 for e in message.entities if isinstance(e, MessageEntityCustomEmoji))
+                    if custom_emoji_count > 0:
+                        logger.info(f"Mirroring message with {custom_emoji_count} custom emoji(s)")
+                
+                # Send with all formatting entities including custom emojis
                 return await self.client.send_message(
                     target_chat,
-                    processed_text or message.message,
-                    formatting_entities=message.entities,  # This preserves custom emojis
-                    link_preview=isinstance(message.media, MessageMediaWebPage)
+                    message.message,
+                    formatting_entities=message.entities,  # Preserves custom emojis
+                    link_preview=isinstance(message.media, MessageMediaWebPage) if message.media else False
                 )
         except Exception as e:
             logger.error(f"Direct mirror failed: {e}")
-            return None
+            # Fallback to plain text if entities fail
+            try:
+                if message.message:
+                    return await self.client.send_message(
+                        target_chat,
+                        message.message,
+                        link_preview=False
+                    )
+            except Exception as fallback_error:
+                logger.error(f"Fallback also failed: {fallback_error}")
         return None
     
     async def _mirror_optimized(self, message: Message, target_chat: int) -> Optional[Message]:
@@ -586,7 +594,7 @@ class MirrorEngine:
                         target_chat,
                         photo_bytes,
                         caption=message.message,  # type: ignore
-                        formatting_entities=message.entities,
+                        formatting_entities=message.entities,  # Preserves custom emojis in caption
                         force_document=False
                     )
 
@@ -619,7 +627,7 @@ class MirrorEngine:
                         target_chat,
                         file_handle,
                         caption=message.message,  # type: ignore
-                        formatting_entities=message.entities,
+                        formatting_entities=message.entities,  # Preserves custom emojis in caption
                         attributes=attributes,
                         force_document=not (is_video or is_sticker or is_gif),
                         video_note=(
@@ -669,7 +677,7 @@ class MirrorEngine:
                     target_chat,
                     message.media,  # type: ignore
                     caption=message.text,  # type: ignore
-                    formatting_entities=message.entities
+                    formatting_entities=message.entities  # Preserves custom emojis
                 )
             return None
         except Exception as e:

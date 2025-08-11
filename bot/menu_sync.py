@@ -4,7 +4,7 @@ Sync menu handlers for channel synchronization
 
 import logging
 
-from telethon.tl.types import Channel, Chat
+from telethon.tl.types import Channel
 
 logger = logging.getLogger('SyncMenu')
 
@@ -34,12 +34,17 @@ class SyncMenu:
 
         self.parent.temp_data[user_id] = {'channels': channels}
 
-        text = "동기화할 소스 채널 선택:\n\n"
-        for i, ch in enumerate(channels[:20], 1):
+        text = "🔄 동기화 - 소스 선택\n\n"
+        for i, ch in enumerate(channels[:15], 1):
             name = getattr(ch, 'title', 'Unknown')
-            text += f"{i}. {name}\n"
+            name = name[:20] if len(name) > 20 else name
+            icon = "📢" if isinstance(ch, Channel) and ch.broadcast else "👥"
+            text += f"{i}. {icon} {name}\n"
+        
+        if len(channels) > 15:
+            text += f"\n... 외 {len(channels) - 15}개"
 
-        text += "\n0. 취소"
+        text += "\n\n0. 취소"
         await event.respond(text)
 
     async def handle_sync_menu(self, event, text: str, state: str):

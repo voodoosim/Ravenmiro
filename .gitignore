@@ -2,6 +2,8 @@
 /.env
 .env.local
 *.env
+settings.json
+bot_data.db
 
 # IDE and tools
 /.vscode
