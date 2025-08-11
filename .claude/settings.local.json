@@ -46,7 +46,8 @@
       "mcp__memory__create_relations",
       "mcp__memory__add_observations",
       "Bash(git remote set-url:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git push:*)"
     ],
     "deny": []
   }

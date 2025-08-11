@@ -198,6 +198,8 @@ class Config:
         self._config['stats'] = {
             'messages_mirrored': 0,
             'media_mirrored': 0,
+            'edits_mirrored': 0,
+            'deletes_mirrored': 0,
             'errors': 0,
             'start_time': None
         }

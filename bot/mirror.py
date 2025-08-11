@@ -138,30 +138,54 @@ class MirrorEngine:
         msg_id = f"{source_chat}_{message.id}"
         if msg_id in self.processing:
             return
-
-        # Process for each target
-        for target_chat in target_chats:
-            # Check flood wait status
-            if await self._is_flood_waiting(target_chat):
-                await self._queue_task(message, source_chat, target_chat, priority=1)
-                continue
-            
-            # Analyze message for optimal strategy
+        
+        self.processing.add(msg_id)
+        
+        try:
+            # Analyze strategy once for all targets
             strategy = await self._analyze_message_strategy(message)
             
-            if strategy == MirrorStrategy.BATCH:
-                # Add to batch buffer for efficient processing
-                await self._add_to_batch(message, source_chat, target_chat)
+            # Use parallel processing for multiple targets (except batch)
+            if len(target_chats) > 1 and strategy != MirrorStrategy.BATCH:
+                # Create tasks for parallel execution
+                tasks = []
+                for target_chat in target_chats:
+                    if not await self._is_flood_waiting(target_chat):
+                        # Process in parallel for speed
+                        tasks.append(self._mirror_to_target_fast(message, source_chat, target_chat, strategy))
+                    else:
+                        # Queue if flood waiting
+                        await self._queue_task(message, source_chat, target_chat, priority=2)
+                
+                # Execute all tasks in parallel
+                if tasks:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for result in results:
+                        if isinstance(result, Exception):
+                            logger.error(f"Parallel mirror error: {result}")
             else:
-                # Process immediately or queue
-                task = MirrorTask(
-                    message=message,
-                    source_chat=source_chat,
-                    target_chat=target_chat,
-                    created_at=time.time(),
-                    priority=self._calculate_priority(message)
-                )
-                await self.task_queue.put(task)
+                # Process sequentially for batch or single target
+                for target_chat in target_chats:
+                    # Check flood wait status
+                    if await self._is_flood_waiting(target_chat):
+                        await self._queue_task(message, source_chat, target_chat, priority=1)
+                        continue
+                    
+                    if strategy == MirrorStrategy.BATCH:
+                        # Add to batch buffer for efficient processing
+                        await self._add_to_batch(message, source_chat, target_chat)
+                    else:
+                        # Process immediately or queue
+                        task = MirrorTask(
+                            message=message,
+                            source_chat=source_chat,
+                            target_chat=target_chat,
+                            created_at=time.time(),
+                            priority=self._calculate_priority(message)
+                        )
+                        await self.task_queue.put(task)
+        finally:
+            self.processing.discard(msg_id)
 
     async def _analyze_message_strategy(self, message: Message) -> MirrorStrategy:
         """MCP Sequential-thinking enhanced strategy analysis"""
@@ -374,17 +398,26 @@ class MirrorEngine:
                 self.config.update_stats('errors')
     
     async def _mirror_direct(self, message: Message, target_chat: int) -> Optional[Message]:
-        """Direct mirroring with MCP enhancements"""
+        """Direct mirroring with custom emoji support"""
         try:
+            # Process custom emojis if present
+            processed_text = None
+            if message.message and message.entities:
+                from telethon.tl.types import MessageEntityCustomEmoji
+                has_custom_emoji = any(isinstance(e, MessageEntityCustomEmoji) for e in message.entities)
+                if has_custom_emoji:
+                    processed_text = await self._process_custom_emojis(message)
+            
             if message.media and self.config.get_option('bypass_restriction'):
                 return await self._mirror_restricted_media_enhanced(message, target_chat)
             elif message.media and self.config.get_option('mirror_media'):
                 return await self._mirror_media(message, target_chat)
             elif message.message and self.config.get_option('mirror_text'):
+                # Send with all entities including custom emojis
                 return await self.client.send_message(
                     target_chat,
-                    message.message,
-                    formatting_entities=message.entities,
+                    processed_text or message.message,
+                    formatting_entities=message.entities,  # This preserves custom emojis
                     link_preview=isinstance(message.media, MessageMediaWebPage)
                 )
         except Exception as e:
@@ -401,6 +434,100 @@ class MirrorEngine:
         """Context-aware smart mirroring"""
         # Implementation with context analysis
         return await self._mirror_direct(message, target_chat)
+    
+    async def _process_custom_emojis(self, message: Message) -> Optional[str]:
+        """Process and preserve custom emojis in messages"""
+        try:
+            if not message.message:
+                return None
+            
+            text = message.message
+            
+            # Check for custom emoji entities
+            if message.entities:
+                from telethon.tl.types import MessageEntityCustomEmoji
+                
+                # Sort entities by offset in reverse to avoid offset issues
+                custom_emoji_entities = [
+                    e for e in message.entities 
+                    if isinstance(e, MessageEntityCustomEmoji)
+                ]
+                
+                if custom_emoji_entities:
+                    # Process custom emojis
+                    for entity in sorted(custom_emoji_entities, key=lambda x: x.offset, reverse=True):
+                        try:
+                            # Get the emoji document ID
+                            document_id = entity.document_id
+                            
+                            # Try to get custom emoji info
+                            # Note: Custom emojis might need special handling based on availability
+                            emoji_text = text[entity.offset:entity.offset + entity.length]
+                            
+                            # Mark custom emoji for preservation
+                            # You might want to download and re-upload the custom emoji sticker
+                            logger.debug(f"Custom emoji found: {emoji_text} (doc_id: {document_id})")
+                            
+                        except Exception as e:
+                            logger.debug(f"Custom emoji processing error: {e}")
+            
+            return text
+            
+        except Exception as e:
+            logger.error(f"Error processing custom emojis: {e}")
+            return None
+    
+    async def _retry_edit(self, message: Message, target_chat: int, target_msg_id: int, wait_time: float):
+        """Retry edit after flood wait"""
+        try:
+            await asyncio.sleep(wait_time)
+            
+            # Process custom emojis
+            processed_text = await self._process_custom_emojis(message)
+            
+            await self.client.edit_message(
+                target_chat,
+                target_msg_id,
+                processed_text or message.message,
+                formatting_entities=message.entities,
+                link_preview=bool(getattr(message, 'web_preview', False)),
+                buttons=getattr(message, 'buttons', None)
+            )
+            logger.info(f"✏️ Edit retry successful for {target_msg_id} in {target_chat}")
+            
+        except Exception as e:
+            logger.error(f"Edit retry failed: {e}")
+    
+    async def _mirror_to_target_fast(self, message: Message, source_chat: int, target_chat: int, strategy: MirrorStrategy):
+        """Fast direct mirroring for parallel processing"""
+        try:
+            # Skip additional checks for speed
+            result = None
+            
+            if strategy == MirrorStrategy.BYPASS:
+                result = await self._mirror_restricted_media_enhanced(message, target_chat)
+            elif strategy == MirrorStrategy.OPTIMIZED:
+                result = await self._mirror_optimized(message, target_chat)
+            elif strategy == MirrorStrategy.SMART:
+                result = await self._mirror_smart(message, target_chat)
+            else:
+                result = await self._mirror_direct(message, target_chat)
+            
+            if result:
+                # Cache the message mapping
+                self.config.cache_message(message.id, result.id, source_chat)
+                self.config.update_stats('messages_mirrored')
+                logger.debug(f"Fast mirrored {message.id} → {result.id}")
+                
+        except FloodWaitError as e:
+            logger.warning(f"Flood wait {e.seconds}s for {target_chat}")
+            self.flood_wait_until[target_chat] = time.time() + e.seconds
+            # Queue for retry with high priority
+            await self._queue_task(message, source_chat, target_chat, priority=2)
+        except Exception as e:
+            logger.error(f"Fast mirror error to {target_chat}: {e}")
+            # Queue for retry through normal processing
+            await self._queue_task(message, source_chat, target_chat, priority=1)
     
     def _update_performance_stats(self, metric: str, value: float):
         """Track performance metrics"""
@@ -550,11 +677,14 @@ class MirrorEngine:
             return None
 
     async def handle_edit(self, event: events.MessageEdited.Event):
-        """MCP-enhanced edit handler with smart retry"""
+        """Enhanced edit handler with custom emoji and formatting support"""
         if not self.config.get_option('mirror_edits'):
             return
 
         message = event.message
+        if not message or not message.message:  # Skip if no text content
+            return
+            
         source_chat = message.chat_id
 
         # Get all target chats
@@ -572,59 +702,80 @@ class MirrorEngine:
         if not target_chats:
             return
 
+        # Process custom emojis and formatting
+        processed_text = await self._process_custom_emojis(message)
+        
         # Edit in all target chats
         for target_chat in target_chats:
             target_msg_id = self.config.get_cached_message(message.id, source_chat)
             if not target_msg_id:
+                logger.debug(f"No cached message for {message.id} in {source_chat}")
                 continue
 
             try:
-                # Context7 best practice: Preserve buttons and link preview
+                # Preserve all formatting, entities, and custom emojis
                 await self.client.edit_message(
                     target_chat,
                     target_msg_id,
-                    message.message,
+                    processed_text or message.message,
                     formatting_entities=message.entities,
-                    link_preview=bool(event.web_preview) if hasattr(event, 'web_preview') else False,
-                    buttons=event.buttons if hasattr(event, 'buttons') else None
+                    link_preview=bool(getattr(message, 'web_preview', False)),
+                    buttons=getattr(message, 'buttons', None)
                 )
-                logger.info("Edited message %s → %s", message.id, target_msg_id)
+                logger.info("✏️ Edited message %s → %s in chat %s", message.id, target_msg_id, target_chat)
+                self.config.update_stats('edits_mirrored')
                 
             except MessageNotModifiedError:
                 # Message content is identical, skip
-                pass
+                logger.debug("Message not modified, skipping")
             except FloodWaitError as e:
+                logger.warning(f"Flood wait {e.seconds}s for edit in {target_chat}")
                 self.flood_wait_until[target_chat] = time.time() + e.seconds
-                # Queue for retry
-                await asyncio.sleep(e.seconds)
+                # Queue for retry after flood wait
+                asyncio.create_task(self._retry_edit(message, target_chat, target_msg_id, e.seconds))
             except Exception as e:
                 logger.error(f"Edit failed for {target_chat}: {e}")
 
     async def handle_delete(self, event: events.MessageDeleted.Event):
-        """MCP-enhanced delete with batch optimization"""
+        """Enhanced delete handler with multi-target support"""
         if not self.config.get_option('mirror_deletes'):
             return
 
-        # Context7: MessageDeleted isn't 100% reliable
-        # Batch deletions for efficiency (up to 100)
+        # Get source chat from event
+        source_chat = getattr(event, 'chat_id', None) or getattr(event, 'channel_id', None)
+        if not source_chat:
+            logger.debug("No source chat in delete event")
+            return
+
+        # Batch deletions for efficiency (up to 100 per batch)
         delete_batch: Dict[int, List[int]] = {}
         
         for msg_id in event.deleted_ids:
-            source_chat = event.chat_id if hasattr(event, 'chat_id') else None
-            if not source_chat:
-                continue
-
-            target_chat = self.config.get_mapping(source_chat)
-            if not target_chat:
-                continue
-
-            target_msg_id = self.config.get_cached_message(msg_id, source_chat)
-            if not target_msg_id:
-                continue
+            # Get all possible target chats
+            target_chats = []
             
-            if target_chat not in delete_batch:
-                delete_batch[target_chat] = []
-            delete_batch[target_chat].append(target_msg_id)
+            # Check old-style mapping
+            old_target = self.config.get_mapping(source_chat)
+            if old_target:
+                target_chats.append(old_target)
+            
+            # Check new-style source->targets mapping
+            configured_source = self.config.get_source_channel()
+            if configured_source and source_chat == configured_source:
+                targets = self.config.get_target_channels()
+                target_chats.extend(targets)
+            
+            target_chats = list(set(target_chats))
+            
+            # Find cached messages in all target chats
+            for target_chat in target_chats:
+                target_msg_id = self.config.get_cached_message(msg_id, source_chat)
+                if not target_msg_id:
+                    continue
+                
+                if target_chat not in delete_batch:
+                    delete_batch[target_chat] = []
+                delete_batch[target_chat].append(target_msg_id)
         
         # Process batches
         for target_chat, msg_ids in delete_batch.items():
@@ -633,12 +784,16 @@ class MirrorEngine:
                 for i in range(0, len(msg_ids), 100):
                     chunk = msg_ids[i:i+100]
                     await self.client.delete_messages(target_chat, chunk)
-                    logger.info(f"Batch deleted {len(chunk)} messages in {target_chat}")
+                    logger.info(f"🗑️ Batch deleted {len(chunk)} messages in {target_chat}")
+                    self.config.update_stats('deletes_mirrored', len(chunk))
                     
             except MessageDeleteForbiddenError:
                 logger.warning(f"Cannot delete messages in {target_chat} - no permission")
             except MessageIdInvalidError:
-                logger.warning(f"Some messages already deleted in {target_chat}")
+                logger.debug(f"Some messages already deleted in {target_chat}")
+            except FloodWaitError as e:
+                logger.warning(f"Flood wait {e.seconds}s for delete in {target_chat}")
+                self.flood_wait_until[target_chat] = time.time() + e.seconds
             except Exception as e:
                 logger.error(f"Batch delete failed: {e}")
 
