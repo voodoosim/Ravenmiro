@@ -26,7 +26,7 @@ class SettingsMenu:
 
         text = "📥 **입력 채널 설정** (소스)\n"
         text += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        
+
         text += "현재 소스 채널:\n"
         text += "─────────────────────────\n"
 
@@ -34,7 +34,7 @@ class SettingsMenu:
             try:
                 entity = await self.client.get_entity(source)
                 name = getattr(entity, "title", "Unknown")
-                
+
                 if isinstance(entity, Channel):
                     if entity.broadcast:
                         entity_type = "📢 채널"
@@ -42,21 +42,21 @@ class SettingsMenu:
                         entity_type = "👥 슈퍼그룹"
                 else:
                     entity_type = "👥 그룹"
-                
+
                 text += f"{entity_type}: {name}\n"
-                
+
                 # Add additional info
                 try:
                     member_count = getattr(entity, "participants_count", None)
                     if member_count:
                         text += f"멤버 수: {member_count:,}명\n"
-                    
+
                     username = getattr(entity, "username", None)
                     if username:
                         text += f"유저네임: @{username}\n"
-                except:
+                except Exception:
                     pass
-                    
+
             except Exception:
                 text += f"ID: {source}\n"
         else:
@@ -79,19 +79,19 @@ class SettingsMenu:
 
         text = "📤 **출력 채널 설정** (타겟들)\n"
         text += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        
+
         text += "현재 타겟 채널들:\n"
         text += "─────────────────────────\n"
 
         if targets:
             channel_count = 0
             group_count = 0
-            
+
             for idx, target_id in enumerate(targets, 1):
                 try:
                     entity = await self.client.get_entity(target_id)
                     name = getattr(entity, "title", "Unknown")[:30]
-                    
+
                     if isinstance(entity, Channel):
                         if entity.broadcast:
                             text += f"{idx}. 📢 {name}\n"
@@ -104,7 +104,7 @@ class SettingsMenu:
                         group_count += 1
                 except Exception:
                     text += f"{idx}. ID: {target_id}\n"
-            
+
             text += f"\n총: 채널 {channel_count}개, 그룹 {group_count}개\n"
         else:
             text += "❌ 설정되지 않음\n"
@@ -211,13 +211,13 @@ class SettingsMenu:
             return
 
         all_entities = []
-        
+
         # Adjust title based on context
         if next_state == "input_set":
             text = "소스로 설정할 채널/그룹 선택:\n"
         else:
             text = "타겟으로 추가할 채널/그룹 선택:\n"
-        
+
         text += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
         # Show channels first
@@ -234,7 +234,7 @@ class SettingsMenu:
                         text += f"{i:2}. {name} ({member_count:,}명)\n"
                     else:
                         text += f"{i:2}. {name}\n"
-                except:
+                except Exception:
                     text += f"{i:2}. {name}\n"
 
         # Show groups
@@ -254,14 +254,14 @@ class SettingsMenu:
                         text += f"{start_idx:2}. {name} ({member_count:,}명)\n"
                     else:
                         text += f"{start_idx:2}. {name}\n"
-                except:
+                except Exception:
                     text += f"{start_idx:2}. {name}\n"
                 start_idx += 1
 
         total = len(all_entities)
         shown_channels = min(len(channels), 15)
         shown_groups = min(len(groups), 15)
-        
+
         if len(channels) > 15 or len(groups) > 15:
             text += f"\n(채널 {shown_channels}/{len(channels)}개, 그룹 {shown_groups}/{len(groups)}개 표시)\n"
 
