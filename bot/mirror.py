@@ -646,48 +646,15 @@ class MirrorEngine:
             )
     
     async def _mirror_media_instant(self, message: Message, target_chat: int) -> Optional[Message]:
-        """Instant media mirroring with emoji preservation"""
+        """Instant media mirroring - always use bypass for protected chats"""
         try:
-            # Check if bypass restriction is needed
-            if message.restriction_reason and self.config.get_option('bypass_restriction'):
-                return await self._mirror_restricted_media_enhanced(message, target_chat)
+            # Always use bypass mode for media to handle protected chats
+            # This downloads and re-uploads the media
+            return await self._mirror_restricted_media_enhanced(message, target_chat)
             
-            # Handle different media types
-            if isinstance(message.media, (MessageMediaPhoto, MessageMediaDocument)):
-                # Direct send for photos and documents
-                return await self.client.send_file(
-                    target_chat,
-                    message.media,
-                    caption=message.message or "",
-                    formatting_entities=message.entities,  # Preserves emojis in caption
-                    silent=True
-                )
-            elif isinstance(message.media, MessageMediaWebPage):
-                # Web preview - send as text with link preview
-                return await self.client.send_message(
-                    target_chat,
-                    message.message or "",
-                    formatting_entities=message.entities,
-                    link_preview=True,
-                    silent=True
-                )
-            else:
-                # Other media types - use generic send
-                return await self.client.send_file(
-                    target_chat,
-                    message.media,
-                    caption=message.message or "",
-                    formatting_entities=message.entities,
-                    silent=True
-                )
         except Exception as e:
             logger.error(f"Media instant mirror failed: {e}")
-            # Try bypass method as fallback
-            try:
-                return await self._mirror_restricted_media_enhanced(message, target_chat)
-            except Exception as bypass_error:
-                logger.error(f"Bypass fallback also failed: {bypass_error}")
-                return None
+            return None
     
     async def _mirror_to_target_fast(self, message: Message, source_chat: int, target_chat: int, strategy: MirrorStrategy):
         """Legacy fast mirroring function - redirects to instant"""
@@ -742,14 +709,16 @@ class MirrorEngine:
         """Ultra-fast media bypass with full emoji support"""
         try:
             if isinstance(message.media, MessageMediaPhoto):
-                # Download to memory for speed
-                photo_bytes = await self.client.download_media(message, file=io.BytesIO())
+                # Download photo to BytesIO buffer
+                buffer = io.BytesIO()
+                await self.client.download_media(message, file=buffer)
+                buffer.seek(0)  # Reset to beginning for reading
 
-                if photo_bytes:
+                if buffer.getvalue():  # Check if data exists
                     self.config.update_stats('media_mirrored')
                     return await self.client.send_file(
                         target_chat,
-                        photo_bytes,
+                        buffer,
                         caption=message.message,  # type: ignore
                         formatting_entities=message.entities,  # ALL emojis preserved
                         force_document=False,
@@ -763,27 +732,27 @@ class MirrorEngine:
                 is_sticker = any(isinstance(a, DocumentAttributeSticker) for a in attributes)
                 is_gif = any(isinstance(a, DocumentAttributeAnimated) for a in attributes)
 
-                document_bytes = await self.client.download_media(message, file=io.BytesIO())
+                # Download document to BytesIO buffer
+                buffer = io.BytesIO()
+                await self.client.download_media(message, file=buffer)
+                buffer.seek(0)  # Reset to beginning
 
-                if document_bytes:
+                if buffer.getvalue():  # Check if data exists
                     filename = None
                     for attr in attributes:
                         if isinstance(attr, DocumentAttributeFilename):
                             filename = attr.file_name
                             break
 
-                    self.config.update_stats('media_mirrored')
+                    # Set filename if exists
+                    if filename:
+                        buffer.name = filename  # type: ignore
 
-                    if isinstance(document_bytes, bytes):
-                        file_handle = io.BytesIO(document_bytes)
-                        if filename:
-                            file_handle.name = filename  # type: ignore
-                    else:
-                        file_handle = document_bytes
+                    self.config.update_stats('media_mirrored')
 
                     return await self.client.send_file(
                         target_chat,
-                        file_handle,
+                        buffer,
                         caption=message.message,  # type: ignore
                         formatting_entities=message.entities,  # ALL emojis preserved
                         attributes=attributes,
@@ -975,6 +944,18 @@ class MirrorEngine:
             except Exception as e:
                 logger.error(f"Batch delete failed: {e}")
 
+    async def _download_media_to_buffer(self, message: Message, buffer: io.BytesIO) -> Optional[io.BytesIO]:
+        """Download media to buffer for re-upload"""
+        try:
+            await self.client.download_media(message, file=buffer)
+            buffer.seek(0)
+            if buffer.getvalue():
+                return buffer
+            return None
+        except Exception as e:
+            logger.error(f"Media download failed: {e}")
+            return None
+    
     async def handle_album(self, event: events.Album.Event):
         """Ultra-fast album handling with parallel processing"""
         if not self.config.get_option('mirror_enabled'):
@@ -1002,16 +983,20 @@ class MirrorEngine:
             media_tasks = []
             
             for message in event.messages:
-                if self.config.get_option('bypass_restriction'):
-                    if isinstance(message.media, (MessageMediaPhoto, MessageMediaDocument)):
-                        media_tasks.append(self.client.download_media(message, file=io.BytesIO()))
+                if self.config.get_option('bypass_restriction') or message.restriction_reason:
+                    # Always download for protected chats
+                    buffer = io.BytesIO()
+                    media_tasks.append(self._download_media_to_buffer(message, buffer))
                 else:
                     media_tasks.append(asyncio.create_task(asyncio.sleep(0)))  # Placeholder
             
             # Download all media in parallel
-            if self.config.get_option('bypass_restriction'):
+            if media_tasks and (self.config.get_option('bypass_restriction') or any(msg.restriction_reason for msg in event.messages)):
                 media_results = await asyncio.gather(*media_tasks, return_exceptions=True)
-                media_list = [m for m in media_results if m and not isinstance(m, Exception)]
+                media_list = []
+                for result in media_results:
+                    if result and not isinstance(result, Exception) and result is not None:
+                        media_list.append(result)
             else:
                 media_list = [msg.media for msg in event.messages]
 
