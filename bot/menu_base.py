@@ -83,33 +83,80 @@ class SimpleMenuHandler:
         user_id = event.sender_id
         self.user_states[user_id] = "main"
 
-        # Get status
-        mappings = self.config.get_all_mappings()
-        input_count = len(mappings)
-        output_count = sum(1 for v in mappings.values() if v is not None)
+        # Get source channel info
+        source_channel = self.config.get_source_channel()
+        source_info = "❌ 설정안됨"
+        if source_channel:
+            try:
+                entity = await self.client.get_entity(source_channel)
+                name = getattr(entity, "title", "Unknown")
+                if isinstance(entity, Channel):
+                    if entity.broadcast:
+                        source_info = f"📢 {name}"
+                    else:
+                        source_info = f"👥 {name}"
+                else:
+                    source_info = f"👥 {name}"
+            except Exception:
+                source_info = f"ID: {source_channel}"
+        
+        # Get target channels info
+        target_channels = self.config.get_target_channels()
+        target_info = "❌ 설정안됨"
+        if target_channels:
+            target_info = f"✅ {len(target_channels)}개 채널/그룹"
+            target_details = []
+            for target_id in target_channels[:3]:  # Show first 3
+                try:
+                    entity = await self.client.get_entity(target_id)
+                    name = getattr(entity, "title", "Unknown")[:20]
+                    if isinstance(entity, Channel):
+                        if entity.broadcast:
+                            target_details.append(f"   📢 {name}")
+                        else:
+                            target_details.append(f"   👥 {name}")
+                    else:
+                        target_details.append(f"   👥 {name}")
+                except Exception:
+                    target_details.append(f"   ID: {target_id}")
+            if len(target_channels) > 3:
+                target_details.append(f"   ... 외 {len(target_channels) - 3}개")
+            if target_details:
+                target_info += "\n" + "\n".join(target_details)
+        
+        # Get log channel info
         log_channel = self.config.get_log_channel()
+        log_info = "❌ 설정안됨"
+        if log_channel:
+            try:
+                entity = await self.client.get_entity(log_channel)
+                name = getattr(entity, "title", "Unknown")
+                log_info = f"📝 {name}"
+            except Exception:
+                log_info = f"ID: {log_channel}"
+        
         mirror_enabled = self.config.get_option("mirror_enabled")
-
-        status = {
-            "input": f"{input_count}개 채널" if input_count else "설정안됨",
-            "output": f"{output_count}개 연결" if output_count else "설정안됨",
-            "log": "설정됨" if log_channel else "설정안됨",
-            "mirror": "✅" if mirror_enabled else "❌",
-        }
+        mirror_status = "✅ 활성화" if mirror_enabled else "❌ 비활성화"
 
         menu_text = f"""카피닌자🥷 까막 V.1
+
+═══════════════════════════
+📥 입력 (소스): {source_info}
+───────────────────────────
+📤 출력 (타겟): 
+{target_info}
+───────────────────────────
+📝 로그: {log_info}
+───────────────────────────
+🔄 미러링: {mirror_status}
+═══════════════════════════
 
 1. 입력 설정
 2. 출력 설정
 3. 로그 설정
-4. 미러링 토글 (현재: {status['mirror']})
+4. 미러링 토글
 
-• 입력: {status['input']}
-• 출력: {status['output']}
-• 미러링: {status['mirror']}
-• 로그: {status['log']}
-
-0번 - 종료"""
+0. 종료"""
 
         await event.respond(menu_text)
 

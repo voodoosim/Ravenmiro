@@ -24,22 +24,48 @@ class SettingsMenu:
         # Get current source channel
         source = self.config.get_source_channel()
 
-        text = "📥 입력 채널 설정 (소스)\n\n"
-        text += "1. 소스 채널 설정\n"
-        text += "2. 소스 채널 제거\n"
-        text += "0. 뒤로 가기\n\n"
+        text = "📥 **입력 채널 설정** (소스)\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
         text += "현재 소스 채널:\n"
+        text += "─────────────────────────\n"
 
         if source:
             try:
                 entity = await self.client.get_entity(source)
                 name = getattr(entity, "title", "Unknown")
-                entity_type = "📢" if isinstance(entity, Channel) else "👥"
-                text += f"{entity_type} {name}\n"
+                
+                if isinstance(entity, Channel):
+                    if entity.broadcast:
+                        entity_type = "📢 채널"
+                    else:
+                        entity_type = "👥 슈퍼그룹"
+                else:
+                    entity_type = "👥 그룹"
+                
+                text += f"{entity_type}: {name}\n"
+                
+                # Add additional info
+                try:
+                    member_count = getattr(entity, "participants_count", None)
+                    if member_count:
+                        text += f"멤버 수: {member_count:,}명\n"
+                    
+                    username = getattr(entity, "username", None)
+                    if username:
+                        text += f"유저네임: @{username}\n"
+                except:
+                    pass
+                    
             except Exception:
-                text += f"• ID: {source}\n"
+                text += f"ID: {source}\n"
         else:
-            text += "[없음]\n"
+            text += "❌ 설정되지 않음\n"
+
+        text += "\n─────────────────────────\n"
+        text += "1. 소스 채널 설정/변경\n"
+        text += "2. 소스 채널 제거\n"
+        text += "0. 뒤로 가기\n"
 
         await event.respond(text)
 
@@ -51,22 +77,42 @@ class SettingsMenu:
         # Get current target channels
         targets = self.config.get_target_channels()
 
-        text = "📤 출력 채널 설정 (타겟들)\n\n"
-        text += "1. 타겟 채널 추가\n"
-        text += "2. 타겟 채널 제거\n"
-        text += "0. 뒤로 가기\n\n"
+        text = "📤 **출력 채널 설정** (타겟들)\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
         text += "현재 타겟 채널들:\n"
+        text += "─────────────────────────\n"
 
         if targets:
-            for target_id in targets:
+            channel_count = 0
+            group_count = 0
+            
+            for idx, target_id in enumerate(targets, 1):
                 try:
                     entity = await self.client.get_entity(target_id)
-                    name = getattr(entity, "title", "Unknown")
-                    text += f"📤 {name}\n"
+                    name = getattr(entity, "title", "Unknown")[:30]
+                    
+                    if isinstance(entity, Channel):
+                        if entity.broadcast:
+                            text += f"{idx}. 📢 {name}\n"
+                            channel_count += 1
+                        else:
+                            text += f"{idx}. 👥 {name}\n"
+                            group_count += 1
+                    else:
+                        text += f"{idx}. 👥 {name}\n"
+                        group_count += 1
                 except Exception:
-                    text += f"• ID: {target_id}\n"
+                    text += f"{idx}. ID: {target_id}\n"
+            
+            text += f"\n총: 채널 {channel_count}개, 그룹 {group_count}개\n"
         else:
-            text += "[없음]\n"
+            text += "❌ 설정되지 않음\n"
+
+        text += "\n─────────────────────────\n"
+        text += "1. 타겟 채널/그룹 추가\n"
+        text += "2. 타겟 채널/그룹 제거\n"
+        text += "0. 뒤로 가기\n"
 
         await event.respond(text)
 
@@ -101,7 +147,7 @@ class SettingsMenu:
 
         if state == "input_menu":
             if text == "1":
-                await self.show_channel_list(event, "input_set")
+                await self.show_channel_list_grouped(event, "input_set")
             elif text == "2":
                 self.config.set_source_channel(None)
                 await event.respond("✅ 소스 채널이 제거되었습니다.")
@@ -142,7 +188,7 @@ class SettingsMenu:
             await self.handle_log_set(event, text)
 
     async def show_channel_list_grouped(self, event, next_state: str):
-        """Show channels and groups separately for target selection"""
+        """Show channels and groups separately for selection"""
         user_id = event.sender_id
         self.parent.user_states[user_id] = next_state
 
@@ -165,24 +211,59 @@ class SettingsMenu:
             return
 
         all_entities = []
-        text = "타겟으로 추가할 채널/그룹 선택:\n\n"
+        
+        # Adjust title based on context
+        if next_state == "input_set":
+            text = "소스로 설정할 채널/그룹 선택:\n"
+        else:
+            text = "타겟으로 추가할 채널/그룹 선택:\n"
+        
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
         # Show channels first
         if channels:
-            text += "📢 채널:\n"
-            for i, ch in enumerate(channels[:10], 1):
+            text += "📢 **채널 목록**\n"
+            text += "─────────────────────────\n"
+            for i, ch in enumerate(channels[:15], 1):
                 all_entities.append(ch)
-                name = getattr(ch, "title", "Unknown")
-                text += f"{i}. {name}\n"
+                name = getattr(ch, "title", "Unknown")[:30]
+                # Add member count if available
+                try:
+                    member_count = getattr(ch, "participants_count", None)
+                    if member_count:
+                        text += f"{i:2}. {name} ({member_count:,}명)\n"
+                    else:
+                        text += f"{i:2}. {name}\n"
+                except:
+                    text += f"{i:2}. {name}\n"
 
         # Show groups
         if groups:
-            text += "\n👥 그룹:\n"
-            start_idx = len(channels) + 1
-            for i, gr in enumerate(groups[:10], start_idx):
+            if channels:
+                text += "\n"
+            text += "👥 **그룹 목록**\n"
+            text += "─────────────────────────\n"
+            start_idx = len(all_entities) + 1
+            for gr in groups[:15]:
                 all_entities.append(gr)
-                name = getattr(gr, "title", "Unknown")
-                text += f"{i}. {name}\n"
+                name = getattr(gr, "title", "Unknown")[:30]
+                # Add member count if available
+                try:
+                    member_count = getattr(gr, "participants_count", None)
+                    if member_count:
+                        text += f"{start_idx:2}. {name} ({member_count:,}명)\n"
+                    else:
+                        text += f"{start_idx:2}. {name}\n"
+                except:
+                    text += f"{start_idx:2}. {name}\n"
+                start_idx += 1
+
+        total = len(all_entities)
+        shown_channels = min(len(channels), 15)
+        shown_groups = min(len(groups), 15)
+        
+        if len(channels) > 15 or len(groups) > 15:
+            text += f"\n(채널 {shown_channels}/{len(channels)}개, 그룹 {shown_groups}/{len(groups)}개 표시)\n"
 
         self.parent.temp_data[user_id] = {"channels": all_entities}
         text += "\n0. 취소"
