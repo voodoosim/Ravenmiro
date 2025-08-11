@@ -486,22 +486,88 @@ class MirrorEngine:
             logger.error(f"Error processing custom emojis: {e}")
             return None
     
+    async def _handle_media_edit(self, message: Message, target_chat: int, target_msg_id: int):
+        """Handle media edits - photo changes, caption updates"""
+        try:
+            # Get the target message to check current state
+            target_msg = await self.client.get_messages(target_chat, ids=target_msg_id)
+            if not target_msg:
+                logger.error(f"Target message {target_msg_id} not found")
+                return
+            
+            # Compare media to detect changes
+            media_changed = False
+            
+            # Check if it's a photo change
+            if isinstance(message.media, MessageMediaPhoto) and isinstance(target_msg.media, MessageMediaPhoto):
+                # Compare photo IDs
+                source_photo_id = message.media.photo.id if message.media.photo else None
+                target_photo_id = target_msg.media.photo.id if target_msg.media.photo else None
+                media_changed = (source_photo_id != target_photo_id)
+            elif isinstance(message.media, MessageMediaDocument) and isinstance(target_msg.media, MessageMediaDocument):
+                # Compare document IDs
+                source_doc_id = message.media.document.id if message.media.document else None
+                target_doc_id = target_msg.media.document.id if target_msg.media.document else None
+                media_changed = (source_doc_id != target_doc_id)
+            else:
+                # Different media types
+                media_changed = True
+            
+            if media_changed:
+                logger.info(f"Media content changed, re-sending")
+                # Delete and re-send for media changes
+                await self.client.delete_messages(target_chat, [target_msg_id])
+                new_msg = await self._mirror_instant(message, message.chat_id, target_chat, MirrorStrategy.DIRECT)
+                if new_msg:
+                    self.config.cache_message(message.id, new_msg.id, message.chat_id)
+            else:
+                # Only caption changed - just edit the caption
+                logger.debug(f"Caption-only edit for {target_msg_id}")
+                await self.client.edit_message(
+                    target_chat,
+                    target_msg_id,
+                    message.message or "",  # New caption
+                    formatting_entities=message.entities,  # Preserve all emojis
+                    file=None  # Don't re-upload media
+                )
+                
+        except Exception as e:
+            logger.error(f"Media edit failed: {e}")
+            # Fallback - delete and re-send
+            try:
+                await self.client.delete_messages(target_chat, [target_msg_id])
+                new_msg = await self._mirror_instant(message, message.chat_id, target_chat, MirrorStrategy.DIRECT)
+                if new_msg:
+                    self.config.cache_message(message.id, new_msg.id, message.chat_id)
+            except Exception as fallback_error:
+                logger.error(f"Fallback also failed: {fallback_error}")
+    
+    async def _handle_text_edit(self, message: Message, target_chat: int, target_msg_id: int):
+        """Handle text-only edits"""
+        try:
+            # Edit with all formatting preserved
+            await self.client.edit_message(
+                target_chat,
+                target_msg_id,
+                message.message or "",
+                formatting_entities=message.entities,  # Preserve all emojis
+                link_preview=bool(getattr(message, 'web_preview', False)),
+                buttons=getattr(message, 'buttons', None)
+            )
+        except Exception as e:
+            logger.error(f"Text edit failed: {e}")
+    
     async def _retry_edit(self, message: Message, target_chat: int, target_msg_id: int, wait_time: float):
         """Retry edit after flood wait"""
         try:
             await asyncio.sleep(wait_time)
             
-            # Process custom emojis
-            processed_text = await self._process_custom_emojis(message)
+            # Retry based on message type
+            if message.media:
+                await self._handle_media_edit(message, target_chat, target_msg_id)
+            else:
+                await self._handle_text_edit(message, target_chat, target_msg_id)
             
-            await self.client.edit_message(
-                target_chat,
-                target_msg_id,
-                processed_text or message.message,
-                formatting_entities=message.entities,
-                link_preview=bool(getattr(message, 'web_preview', False)),
-                buttons=getattr(message, 'buttons', None)
-            )
             logger.info(f"✏️ Edit retry successful for {target_msg_id} in {target_chat}")
             
         except Exception as e:
@@ -737,12 +803,12 @@ class MirrorEngine:
             return None
 
     async def handle_edit(self, event: events.MessageEdited.Event):
-        """Enhanced edit handler with custom emoji and formatting support"""
+        """Complete edit handler - text, media, and caption changes"""
         if not self.config.get_option('mirror_edits'):
             return
 
         message = event.message
-        if not message or not message.message:  # Skip if no text content
+        if not message:
             return
             
         source_chat = message.chat_id
@@ -762,10 +828,7 @@ class MirrorEngine:
         if not target_chats:
             return
 
-        # Process custom emojis and formatting
-        processed_text = await self._process_custom_emojis(message)
-        
-        # Edit in all target chats
+        # Handle different edit types
         for target_chat in target_chats:
             target_msg_id = self.config.get_cached_message(message.id, source_chat)
             if not target_msg_id:
@@ -773,25 +836,39 @@ class MirrorEngine:
                 continue
 
             try:
-                # Preserve all formatting, entities, and custom emojis
-                await self.client.edit_message(
-                    target_chat,
-                    target_msg_id,
-                    processed_text or message.message,
-                    formatting_entities=message.entities,
-                    link_preview=bool(getattr(message, 'web_preview', False)),
-                    buttons=getattr(message, 'buttons', None)
-                )
-                logger.info("✏️ Edited message %s → %s in chat %s", message.id, target_msg_id, target_chat)
+                # Get target message to check what type it was
+                target_msg = await self.client.get_messages(target_chat, ids=target_msg_id)
+                
+                # Handle type changes (text<->media)
+                if message.media and not target_msg.media:
+                    # Text changed to media - delete and re-send
+                    logger.info("Text → Media change detected")
+                    await self.client.delete_messages(target_chat, [target_msg_id])
+                    new_msg = await self._mirror_instant(message, source_chat, target_chat, MirrorStrategy.DIRECT)
+                    if new_msg:
+                        self.config.cache_message(message.id, new_msg.id, source_chat)
+                elif not message.media and target_msg.media:
+                    # Media changed to text - delete and re-send
+                    logger.info("Media → Text change detected")
+                    await self.client.delete_messages(target_chat, [target_msg_id])
+                    new_msg = await self._mirror_instant(message, source_chat, target_chat, MirrorStrategy.DIRECT)
+                    if new_msg:
+                        self.config.cache_message(message.id, new_msg.id, source_chat)
+                elif message.media:
+                    # Media edit (caption or media change)
+                    await self._handle_media_edit(message, target_chat, target_msg_id)
+                else:
+                    # Text-only edit
+                    await self._handle_text_edit(message, target_chat, target_msg_id)
+                
+                logger.info(f"✏️ Edited {message.id} → {target_msg_id} in {target_chat}")
                 self.config.update_stats('edits_mirrored')
                 
             except MessageNotModifiedError:
-                # Message content is identical, skip
                 logger.debug("Message not modified, skipping")
             except FloodWaitError as e:
                 logger.warning(f"Flood wait {e.seconds}s for edit in {target_chat}")
                 self.flood_wait_until[target_chat] = time.time() + e.seconds
-                # Queue for retry after flood wait
                 asyncio.create_task(self._retry_edit(message, target_chat, target_msg_id, e.seconds))
             except Exception as e:
                 logger.error(f"Edit failed for {target_chat}: {e}")
