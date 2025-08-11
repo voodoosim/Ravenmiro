@@ -5,7 +5,8 @@ Manages Telethon session strings and authentication
 
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any
+
 from telethon.sessions import StringSession  # type: ignore[import-untyped]
 from telethon import TelegramClient  # type: ignore[import-untyped]
 from telethon.errors import SessionPasswordNeededError  # type: ignore[import-untyped]
@@ -20,17 +21,17 @@ class SessionManager:
         self.session_file = Path('data/session.txt')
         self.session_file.parent.mkdir(parents=True, exist_ok=True)
 
-    async def get_session(self) -> Optional[str]:
+    async def get_session(self) -> str | None:
         """Get session string from config or file"""
         session = self.config.session_string
 
         if not session and self.session_file.exists():
             try:
-                with open(self.session_file, 'r', encoding='utf-8') as f:
+                with open(self.session_file, encoding='utf-8') as f:
                     session = f.read().strip()
                     if session:
                         self.config.session_string = session
-            except (OSError, IOError) as e:
+            except OSError as e:
                 logger.error("Failed to read session file: %s", e)
 
         return session if session else None
@@ -45,7 +46,7 @@ class SessionManager:
 
             logger.info("Session saved successfully")
             return True
-        except (OSError, IOError) as e:
+        except OSError as e:
             logger.error("Failed to save session: %s", e)
             return False
 
@@ -72,7 +73,7 @@ class SessionManager:
             if client:
                 try:
                     await client.disconnect()  # type: ignore
-                except:
+                except Exception:
                     pass
             return authorized
 
@@ -80,7 +81,7 @@ class SessionManager:
             logger.error("Session validation failed: %s", e)
             return False
 
-    async def create_session(self, phone: Optional[str] = None) -> Optional[str]:
+    async def create_session(self, phone: str | None = None) -> str | None:
         """Create new session (interactive)"""
         try:
             client = TelegramClient(
@@ -113,7 +114,7 @@ class SessionManager:
             if client:
                 try:
                     await client.disconnect()  # type: ignore
-                except:
+                except Exception:
                     pass
             return session_string
 
@@ -134,7 +135,7 @@ class SessionManager:
             self.session_file.unlink()
         logger.info("Session cleared")
 
-    async def get_session_info(self) -> Optional[Dict[str, Any]]:
+    async def get_session_info(self) -> dict[str, Any] | None:
         """Get information about current session"""
         session = await self.get_session()
         if not session:
@@ -169,7 +170,7 @@ class SessionManager:
             if client:
                 try:
                     await client.disconnect()  # type: ignore
-                except:
+                except Exception:
                     pass
             return info
 

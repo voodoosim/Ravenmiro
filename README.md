@@ -1,6 +1,104 @@
-# Telegram Mirror Bot 🤖
+# Telegram Mirror Bot
+
+Complete channel mirroring bot with copy restriction bypass capabilities.
+
+## Features
+
+- ✅ **Complete Mirroring**: Text, media, edits, deletes, albums
+- 🔓 **Copy Restriction Bypass**: Download and re-upload protected content
+- ⚡ **High Performance**: Task queue, batch processing, flood wait handling
+- 🎯 **Smart Strategies**: Auto-selects optimal mirroring method
+- 📊 **Statistics**: Track messages, media, errors
+
+## Installation
+
+### 1. Get Telegram API Credentials
+1. Visit https://my.telegram.org
+2. Log in with your phone number
+3. Go to "API development tools"
+4. Create an application
+5. Copy your `API_ID` and `API_HASH`
+
+### 2. Setup Environment
+```bash
+# Clone repository
+git clone https://github.com/yourusername/crowbot.git
+cd crowbot
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Edit .env and add your API_ID and API_HASH
+```
+
+### 3. Run the Bot
+```bash
+# Test installation
+python test_bot.py
+
+# Start bot
+python run_bot.py
+```
+
+## Usage
+
+### Bot Commands
+- `.설정` - Open configuration menu
+- `.동기화` - Sync channel history
+
+### Configuration Menu
+1. **Session Management**: Set/update session string
+2. **Channel Mappings**: Add source → target channels
+3. **Mirror Options**: Toggle text/media/edits/deletes
+4. **Statistics**: View mirroring stats
+5. **Channel Sync**: Sync historical messages
+
+## Project Structure
+
+```
+crowbot/
+├── bot/
+│   ├── main.py          # Main bot entry point
+│   ├── config.py        # Configuration management
+│   ├── mirror.py        # Core mirroring engine
+│   ├── simple_menu.py   # Menu interface
+│   └── session_handler.py # Session management
+├── data/
+│   ├── bot.log          # Application logs
+│   └── settings.json    # Persistent settings
+├── .env                 # API credentials
+├── run_bot.py          # Bot launcher
+└── test_bot.py         # System check tool
+```
+
+## Requirements
+
+- Python 3.8+
+- Telegram API credentials
+- Session string (generated through bot menu)
+
+## License
+
+MIT License
+
+<!-- 
+Project: Telegram Mirror Bot
+Version: 1.0.0
+License: MIT
+Author: CrowBot Team
+Last Updated: 2025-08-10
+-->
+
+# Telegram Mirror Bot 🤖 (User Bot)
 
 완벽한 텔레그램 미러링 봇 - 복사/전달 제한 우회 기능 포함
+
+✅ **사용 방법**: 이제 모든 사용자가 명령어를 사용할 수 있습니다!
+- **누구나** 봇에게 명령어를 입력할 수 있습니다
+- 1:1 대화, 그룹, 채널 모두에서 작동합니다
+- `.설정` 또는 `.동기화` 명령어를 입력하면 봇이 응답합니다
 
 ## 주요 기능 ✨
 
@@ -31,17 +129,16 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 3. 설정
+### 3. 환경 설정
 ```bash
-# 설정 파일 복사
-cp data/settings.json.example data/settings.json
+# .env 파일 생성
+cp .env.example .env
 
-# settings.json 편집하여 API 정보 입력
-{
-  "api_id": YOUR_API_ID,
-  "api_hash": "YOUR_API_HASH",
-  ...
-}
+# .env 파일 편집하여 API 정보 입력
+API_ID=your_api_id_here
+API_HASH=your_api_hash_here
+SESSION_STRING=  # 선택사항 - 메뉴에서도 설정 가능
+LOG_CHANNEL_ID=  # 선택사항 - 로그 채널 ID
 ```
 
 ### 4. 실행
@@ -51,51 +148,41 @@ python bot/main.py
 
 ## 명령어 가이드 📝
 
-### 기본 명령어
+### 🟢 사용 방법
+
+**모든 사용자가 사용 가능:**
+1. **아무 채팅방**에서 봇과 대화
+2. **누구나** `.설정` 또는 `.동기화` 명령어 입력 가능
+3. 봇이 메뉴를 응답하면 숫자로 선택
+
+### 새로운 간단한 메뉴 시스템
+
+#### 기본 명령어
 ```bash
-.설정                    # 도움말 표시
-.설정 help              # 전체 도움말
-.설정 help [command]    # 특정 명령어 도움말
+.설정      # 설정 메뉴 열기
+.동기화    # 채널 전체 동기화
 ```
 
-### 채널 매핑 관리
-```bash
-.설정 map list                      # 매핑 목록 보기
-.설정 map add [소스ID] [타겟ID]      # 매핑 추가
-.설정 map del [인덱스/소스ID]        # 매핑 삭제
-.설정 map clear                     # 모든 매핑 삭제
+#### 메뉴 구조
+```
+1. 📊 상태 - 전체 설정 및 상태 보기
+2. 📥 입력설정 - 소스 채널 설정
+3. 📤 출력설정 - 타겟 채널 설정
+4. 📝 로그설정 - 로그 채널 설정
 
-# 단축 명령어
-.설정 ls                            # = map list
-.설정 add [소스] [타겟]              # = map add
-.설정 rm [인덱스]                   # = map del
+0. 종료
 ```
 
-### 세션 관리
-```bash
-.설정 session set          # 세션 문자열 설정
-.설정 session info         # 세션 정보 확인
-.설정 session test         # 세션 유효성 검사
-.설정 session clear        # 세션 삭제
-```
+#### 사용 예시
+1. `.설정` 입력
+2. 번호로 메뉴 선택
+3. `0`으로 뒤로가기/종료
 
-### 봇 제어
+### 채널 동기화
 ```bash
-.설정 bot start            # 미러링 시작
-.설정 bot stop             # 미러링 중지
-.설정 bot restart          # 봇 재시작
-.설정 bot status           # 상태 확인
-
-# 단축 명령어
-.설정 st                   # = bot status
-```
-
-### 통계 및 설정
-```bash
-.설정 stats                # 통계 보기
-.설정 stats reset          # 통계 초기화
-.설정 config show          # 설정 보기
-.설정 config option [name] [on/off]  # 옵션 설정
+.동기화
+# 채널 ID 또는 @username 입력
+# 모든 메시지를 타겟 채널로 복사
 ```
 
 ## 세션 문자열 생성 방법 🔑

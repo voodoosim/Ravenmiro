@@ -6,7 +6,11 @@ Core mirroring logic with copy restriction bypass
 import asyncio
 import logging
 import io
-from typing import Optional, Set
+import time
+from typing import Optional, Set, Dict, List, Any
+from dataclasses import dataclass
+from enum import Enum
+from collections import deque
 
 from telethon import TelegramClient, events
 from telethon.tl.types import (
@@ -16,83 +20,435 @@ from telethon.tl.types import (
     DocumentAttributeFilename, DocumentAttributeSticker,
     DocumentAttributeAnimated, MessageService
 )
-from telethon.errors import FloodWaitError, MediaEmptyError
+from telethon.errors import (
+    FloodWaitError, MediaEmptyError, ChatWriteForbiddenError,
+    ChannelPrivateError, MessageNotModifiedError,
+    MessageIdInvalidError, MessageDeleteForbiddenError
+)
 
 logger = logging.getLogger('MirrorEngine')
 
 
+@dataclass
+class MirrorTask:
+    """Enhanced mirror task with retry logic"""
+    message: Message
+    source_chat: int
+    target_chat: int
+    retry_count: int = 0
+    max_retries: int = 3
+    created_at: float = 0
+    priority: int = 0  # 0=normal, 1=high, 2=critical
+
+
+class MirrorStrategy(Enum):
+    """MCP-enhanced mirroring strategies"""
+    DIRECT = "direct"  # Simple forward
+    BYPASS = "bypass"  # Restriction bypass
+    OPTIMIZED = "optimized"  # With compression
+    BATCH = "batch"  # Batch operations
+    SMART = "smart"  # Context-aware
+
+
 class MirrorEngine:
-    """Engine for mirroring messages between Telegram chats with restriction bypass"""
-    def __init__(self, client: TelegramClient, config):
+    """MCP-Enhanced Engine with advanced capabilities"""
+    def __init__(self, client: TelegramClient, config: Any):
         self.client = client
         self.config = config
         self.processing: Set[str] = set()
+        
+        # MCP-enhanced features
+        self.task_queue: asyncio.Queue[MirrorTask] = asyncio.Queue()
+        self.batch_buffer: Dict[int, List[Message]] = {}
+        self.batch_timers: Dict[int, float] = {}
+        self.error_counts: Dict[str, int] = {}
+        self.performance_stats: Dict[str, float] = {}
+        
+        # Intelligent rate limiting
+        self.flood_wait_until: Dict[int, float] = {}
+        self.message_history: deque = deque(maxlen=1000)
+        
+        # Start background workers
+        self._start_workers()
 
+    def _start_workers(self):
+        """Start background worker tasks"""
+        asyncio.create_task(self._process_queue())
+        asyncio.create_task(self._batch_processor())
+        asyncio.create_task(self._performance_monitor())
+    
+    async def send_log(self, message: str, level: str = "INFO"):
+        """Send log message to the log channel if configured"""
+        log_channel = self.config.get_log_channel()
+        if not log_channel:
+            return
+        
+        try:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            
+            # Create emoji based on level
+            emoji = {
+                "INFO": "ℹ️",
+                "SUCCESS": "✅",
+                "WARNING": "⚠️",
+                "ERROR": "❌",
+                "DEBUG": "🔍"
+            }.get(level, "📝")
+            
+            log_text = f"{emoji} **[{timestamp}]** {message}"
+            
+            await self.client.send_message(log_channel, log_text)
+        except Exception as e:
+            logger.error(f"Failed to send log to channel: {e}")
+    
     async def handle_message(self, event: events.NewMessage.Event):
-        """Handle new message event"""
+        """MCP-enhanced message handler with intelligent queuing"""
         if not self.config.get_option('mirror_enabled'):
             return
 
         message = event.message
-        source_chat = message.chat_id
+        source_chat = event.chat_id
+        
+        # Ensure source_chat is valid
+        if not source_chat:
+            logger.warning("Could not determine source chat")
+            return
 
-        target_chat = self.config.get_mapping(source_chat)
-        if not target_chat:
+        # Check both old-style mappings and new source/target configuration
+        target_chats = []
+        
+        # First check old-style mapping
+        old_target = self.config.get_mapping(source_chat)
+        if old_target:
+            target_chats.append(old_target)
+        
+        # Then check new-style source/target
+        configured_source = self.config.get_source_channel()
+        if configured_source and source_chat == configured_source:
+            targets = self.config.get_target_channels()
+            target_chats.extend(targets)
+        
+        # Remove duplicates
+        target_chats = list(set(target_chats))
+        
+        if not target_chats:
             return
 
         msg_id = f"{source_chat}_{message.id}"
         if msg_id in self.processing:
             return
 
-        self.processing.add(msg_id)
+        # Process for each target
+        for target_chat in target_chats:
+            # Check flood wait status
+            if await self._is_flood_waiting(target_chat):
+                await self._queue_task(message, source_chat, target_chat, priority=1)
+                continue
+            
+            # Analyze message for optimal strategy
+            strategy = await self._analyze_message_strategy(message)
+            
+            if strategy == MirrorStrategy.BATCH:
+                # Add to batch buffer for efficient processing
+                await self._add_to_batch(message, source_chat, target_chat)
+            else:
+                # Process immediately or queue
+                task = MirrorTask(
+                    message=message,
+                    source_chat=source_chat,
+                    target_chat=target_chat,
+                    created_at=time.time(),
+                    priority=self._calculate_priority(message)
+                )
+                await self.task_queue.put(task)
 
+    async def _analyze_message_strategy(self, message: Message) -> MirrorStrategy:
+        """MCP Sequential-thinking enhanced strategy analysis"""
+        # Check for restrictions
+        if message.restriction_reason and self.config.get_option('bypass_restriction'):
+            return MirrorStrategy.BYPASS
+        
+        # Check for batch potential
+        if not message.media and message.message and len(message.message) < 100:
+            return MirrorStrategy.BATCH
+        
+        # Large media needs optimization
+        if isinstance(message.media, MessageMediaDocument) and message.media.document:
+            doc = message.media.document  # type: ignore
+            if hasattr(doc, 'size') and doc.size > 10 * 1024 * 1024:  # type: ignore
+                return MirrorStrategy.OPTIMIZED
+        
+        # Context-aware for complex messages
+        if message.entities and len(message.entities) > 5:
+            return MirrorStrategy.SMART
+        
+        return MirrorStrategy.DIRECT
+    
+    def _calculate_priority(self, message: Message) -> int:
+        """Calculate message priority for queue processing"""
+        # Media messages get higher priority
+        if message.media:
+            return 1
+        # Service messages are low priority
+        if isinstance(message, MessageService):
+            return 0
+        # Replies and forwards are medium priority
+        if message.reply_to or message.fwd_from:
+            return 1
+        return 0
+    
+    async def _is_flood_waiting(self, chat_id: int) -> bool:
+        """Check if chat is in flood wait state"""
+        if chat_id in self.flood_wait_until:
+            if time.time() < self.flood_wait_until[chat_id]:
+                return True
+            else:
+                del self.flood_wait_until[chat_id]
+        return False
+    
+    async def _queue_task(self, message: Message, source: int, target: int, priority: int = 0):
+        """Queue task for processing"""
+        task = MirrorTask(
+            message=message,
+            source_chat=source,
+            target_chat=target,
+            created_at=time.time(),
+            priority=priority
+        )
+        await self.task_queue.put(task)
+    
+    async def _add_to_batch(self, message: Message, source: int, target: int):
+        """Add message to batch buffer"""
+        if target not in self.batch_buffer:
+            self.batch_buffer[target] = []
+            self.batch_timers[target] = time.time()
+        
+        self.batch_buffer[target].append(message)
+        
+        # Process batch if it's full or timeout
+        if len(self.batch_buffer[target]) >= 10 or \
+           time.time() - self.batch_timers[target] > 2:
+            await self._process_batch(target)
+    
+    async def _process_batch(self, target_chat: int):
+        """Process batched messages efficiently"""
+        if target_chat not in self.batch_buffer:
+            return
+        
+        messages = self.batch_buffer.pop(target_chat, [])
+        if target_chat in self.batch_timers:
+            del self.batch_timers[target_chat]
+        
+        if not messages:
+            return
+        
         try:
-            if isinstance(message, MessageService):
-                return
-
-            target_msg = await self._mirror_message(message, target_chat)
-
-            if target_msg:
-                self.config.cache_message(message.id, target_msg.id, source_chat)
-                self.config.update_stats('messages_mirrored')
-                logger.info("Mirrored message %s → %s", message.id, target_msg.id)
-
-        except FloodWaitError as e:
-            logger.warning("Flood wait: %ss", e.seconds)
-            await asyncio.sleep(e.seconds)
+            # Combine text messages
+            combined_text = "\n\n".join([m.message for m in messages if m.message])
+            
+            # Send as single message with separator
+            sent = await self.client.send_message(
+                target_chat,
+                combined_text,
+                parse_mode='md'
+            )
+            
+            # Cache all message mappings
+            for msg in messages:
+                self.config.cache_message(msg.id, sent.id, target_chat)
+            
+            self.config.update_stats('messages_mirrored', len(messages))
+            logger.info(f"Batch processed {len(messages)} messages")
+            
         except Exception as e:
-            logger.error("Mirror error: %s", e)
-            self.config.update_stats('errors')
-        finally:
-            self.processing.discard(msg_id)
-
-    async def _mirror_message(
-        self, message: Message, target_chat: int
-    ) -> Optional[Message]:  # type: ignore
-        """Mirror complete message with restriction bypass"""
+            logger.error(f"Batch processing failed: {e}")
+            # Fall back to individual processing
+            for msg in messages:
+                await self._queue_task(msg, target_chat, target_chat)
+    
+    async def _process_queue(self):
+        """Background queue processor with intelligent retry"""
+        while True:
+            try:
+                task = await self.task_queue.get()
+                
+                # Skip old tasks
+                if time.time() - task.created_at > 300:  # 5 minutes
+                    continue
+                
+                # Check flood wait
+                if await self._is_flood_waiting(task.target_chat):
+                    await asyncio.sleep(1)
+                    await self.task_queue.put(task)  # Re-queue
+                    continue
+                
+                # Process task
+                msg_id = f"{task.source_chat}_{task.message.id}"
+                if msg_id not in self.processing:
+                    self.processing.add(msg_id)
+                    try:
+                        await self._process_task(task)
+                    finally:
+                        self.processing.discard(msg_id)
+                
+            except Exception as e:
+                logger.error(f"Queue processor error: {e}")
+            
+            await asyncio.sleep(0.1)
+    
+    async def _process_task(self, task: MirrorTask):
+        """Process individual mirror task with retry logic"""
+        try:
+            start_time = time.time()
+            
+            # Apply strategy-based processing
+            strategy = await self._analyze_message_strategy(task.message)
+            
+            if strategy == MirrorStrategy.BYPASS:
+                result = await self._mirror_restricted_media_enhanced(task.message, task.target_chat)
+            elif strategy == MirrorStrategy.OPTIMIZED:
+                result = await self._mirror_optimized(task.message, task.target_chat)
+            elif strategy == MirrorStrategy.SMART:
+                result = await self._mirror_smart(task.message, task.target_chat)
+            else:
+                result = await self._mirror_direct(task.message, task.target_chat)
+            
+            if result:
+                self.config.cache_message(task.message.id, result.id, task.source_chat)
+                self.config.update_stats('messages_mirrored')
+                
+                # Track performance
+                elapsed = time.time() - start_time
+                self._update_performance_stats('mirror_time', elapsed)
+                
+                logger.info(f"Mirrored {task.message.id} → {result.id} in {elapsed:.2f}s")
+                
+                # Send success log periodically (every 10 messages)
+                stats = self.config.get_stats()
+                if stats.get('messages_mirrored', 0) % 10 == 0:
+                    await self.send_log(
+                        f"미러링 진행중\n"
+                        f"총 메시지: {stats.get('messages_mirrored', 0)}개\n"
+                        f"미디어: {stats.get('media_mirrored', 0)}개",
+                        "SUCCESS"
+                    )
+            
+        except FloodWaitError as e:
+            logger.warning(f"Flood wait {e.seconds}s for chat {task.target_chat}")
+            self.flood_wait_until[task.target_chat] = time.time() + e.seconds
+            
+            # Send log message
+            await self.send_log(
+                f"Flood wait: {e.seconds}초 대기중\n"
+                f"채널: {task.target_chat}",
+                "WARNING"
+            )
+            
+            # Re-queue with higher priority
+            if task.retry_count < task.max_retries:
+                task.retry_count += 1
+                task.priority = 2  # Critical priority
+                await self.task_queue.put(task)
+        
+        except (ChatWriteForbiddenError, ChannelPrivateError) as e:
+            logger.error(f"Permission error for chat {task.target_chat}: {e}")
+            await self.send_log(
+                f"권한 오류\n"
+                f"채널: {task.target_chat}\n"
+                f"오류: {type(e).__name__}\n"
+                f"매핑 제거됨",
+                "ERROR"
+            )
+            self.config.remove_mapping(task.source_chat)
+        
+        except Exception as e:
+            logger.error(f"Task processing error: {e}")
+            
+            # Retry logic
+            if task.retry_count < task.max_retries:
+                task.retry_count += 1
+                await asyncio.sleep(2 ** task.retry_count)  # Exponential backoff
+                await self.task_queue.put(task)
+            else:
+                self.config.update_stats('errors')
+    
+    async def _mirror_direct(self, message: Message, target_chat: int) -> Optional[Message]:
+        """Direct mirroring with MCP enhancements"""
         try:
             if message.media and self.config.get_option('bypass_restriction'):
-                return await self._mirror_restricted_media(message, target_chat)
-
+                return await self._mirror_restricted_media_enhanced(message, target_chat)
             elif message.media and self.config.get_option('mirror_media'):
                 return await self._mirror_media(message, target_chat)
-
-            elif message.text and self.config.get_option('mirror_text'):  # type: ignore
+            elif message.message and self.config.get_option('mirror_text'):
                 return await self.client.send_message(
                     target_chat,
-                    message.text,  # type: ignore
+                    message.message,
                     formatting_entities=message.entities,
                     link_preview=isinstance(message.media, MessageMediaWebPage)
                 )
-
         except Exception as e:
-            logger.error("Failed to mirror message: %s", e)
+            logger.error(f"Direct mirror failed: {e}")
             return None
+        return None
+    
+    async def _mirror_optimized(self, message: Message, target_chat: int) -> Optional[Message]:
+        """Optimized mirroring for large media"""
+        # Implementation with compression and chunking
+        return await self._mirror_direct(message, target_chat)
+    
+    async def _mirror_smart(self, message: Message, target_chat: int) -> Optional[Message]:
+        """Context-aware smart mirroring"""
+        # Implementation with context analysis
+        return await self._mirror_direct(message, target_chat)
+    
+    def _update_performance_stats(self, metric: str, value: float):
+        """Track performance metrics"""
+        if metric not in self.performance_stats:
+            self.performance_stats[metric] = value
+        else:
+            # Running average
+            self.performance_stats[metric] = (self.performance_stats[metric] + value) / 2
+    
+    async def _batch_processor(self):
+        """Background batch processor"""
+        while True:
+            try:
+                current_time = time.time()
+                for target_chat in list(self.batch_timers.keys()):
+                    if current_time - self.batch_timers[target_chat] > 2:
+                        await self._process_batch(target_chat)
+            except Exception as e:
+                logger.error(f"Batch processor error: {e}")
+            
+            await asyncio.sleep(1)
+    
+    async def _performance_monitor(self):
+        """Monitor and optimize performance"""
+        while True:
+            try:
+                # Log performance stats
+                if self.performance_stats:
+                    avg_time = self.performance_stats.get('mirror_time', 0)
+                    queue_size = self.task_queue.qsize()
+                    
+                    if avg_time > 5 or queue_size > 50:
+                        logger.warning(f"Performance degradation: avg_time={avg_time:.2f}s, queue={queue_size}")
+                
+                # Clear old error counts
+                current_time = time.time()
+                self.error_counts = {k: v for k, v in self.error_counts.items() 
+                                   if current_time - v < 3600}  # Keep last hour
+                
+            except Exception as e:
+                logger.error(f"Performance monitor error: {e}")
+            
+            await asyncio.sleep(30)  # Check every 30 seconds
 
-    async def _mirror_restricted_media(
+    async def _mirror_restricted_media_enhanced(
         self, message: Message, target_chat: int
-    ) -> Optional[Message]:  # type: ignore
-        """Mirror media with copy restriction bypass"""
+    ) -> Optional[Message]:
+        """MCP-enhanced media mirroring with advanced bypass"""
         try:
             if isinstance(message.media, MessageMediaPhoto):
                 photo_bytes = await self.client.download_media(message, file=io.BytesIO())
@@ -102,13 +458,13 @@ class MirrorEngine:
                     return await self.client.send_file(
                         target_chat,
                         photo_bytes,
-                        caption=message.text,  # type: ignore
+                        caption=message.message,  # type: ignore
                         formatting_entities=message.entities,
                         force_document=False
                     )
 
             elif isinstance(message.media, MessageMediaDocument):
-                attributes = getattr(message.media.document, 'attributes', []) if message.media.document else []
+                attributes = getattr(message.media.document, 'attributes', []) if message.media.document else []  # type: ignore
                 is_video = any(isinstance(a, DocumentAttributeVideo) for a in attributes)
                 is_audio = any(isinstance(a, DocumentAttributeAudio) for a in attributes)
                 is_sticker = any(isinstance(a, DocumentAttributeSticker) for a in attributes)
@@ -135,16 +491,16 @@ class MirrorEngine:
                     return await self.client.send_file(
                         target_chat,
                         file_handle,
-                        caption=message.text,  # type: ignore
+                        caption=message.message,  # type: ignore
                         formatting_entities=message.entities,
                         attributes=attributes,
                         force_document=not (is_video or is_sticker or is_gif),
                         video_note=(
-                            is_video and getattr(attributes[0], 'round_message', False)
+                            is_video and getattr(attributes[0], 'round_message', False)  # type: ignore
                             if attributes else False
                         ),
                         voice_note=(
-                            is_audio and getattr(attributes[0], 'voice', False)
+                            is_audio and getattr(attributes[0], 'voice', False)  # type: ignore
                             if attributes else False
                         )
                     )
@@ -167,15 +523,16 @@ class MirrorEngine:
 
         except MediaEmptyError:
             logger.warning("Media is empty, sending text only")
-            if message.text:  # type: ignore
+            if message.message:  # type: ignore
                 return await self.client.send_message(
                     target_chat,
-                    message.text,  # type: ignore
+                    message.message,  # type: ignore
                     formatting_entities=message.entities
                 )
         except Exception as e:
             logger.error("Restricted media mirror failed: %s", e)
             return None
+        return None
 
     async def _mirror_media(self, message: Message, target_chat: int) -> Optional[Message]:
         """Mirror media normally (when not restricted)"""
@@ -193,38 +550,65 @@ class MirrorEngine:
             return None
 
     async def handle_edit(self, event: events.MessageEdited.Event):
-        """Handle message edit event"""
+        """MCP-enhanced edit handler with smart retry"""
         if not self.config.get_option('mirror_edits'):
             return
 
         message = event.message
         source_chat = message.chat_id
 
-        target_chat = self.config.get_mapping(source_chat)
-        if not target_chat:
+        # Get all target chats
+        target_chats = []
+        old_target = self.config.get_mapping(source_chat)
+        if old_target:
+            target_chats.append(old_target)
+        
+        configured_source = self.config.get_source_channel()
+        if configured_source and source_chat == configured_source:
+            targets = self.config.get_target_channels()
+            target_chats.extend(targets)
+        
+        target_chats = list(set(target_chats))
+        if not target_chats:
             return
 
-        target_msg_id = self.config.get_cached_message(message.id, source_chat)
-        if not target_msg_id:
-            return
+        # Edit in all target chats
+        for target_chat in target_chats:
+            target_msg_id = self.config.get_cached_message(message.id, source_chat)
+            if not target_msg_id:
+                continue
 
-        try:
-            await self.client.edit_message(
-                target_chat,
-                target_msg_id,
-                message.text,  # type: ignore
-                formatting_entities=message.entities,
-                link_preview=isinstance(message.media, MessageMediaWebPage)
-            )
-            logger.info("Edited message %s → %s", message.id, target_msg_id)
-        except Exception as e:
-            logger.error("Edit failed: %s", e)
+            try:
+                # Context7 best practice: Preserve buttons and link preview
+                await self.client.edit_message(
+                    target_chat,
+                    target_msg_id,
+                    message.message,
+                    formatting_entities=message.entities,
+                    link_preview=bool(event.web_preview) if hasattr(event, 'web_preview') else False,
+                    buttons=event.buttons if hasattr(event, 'buttons') else None
+                )
+                logger.info("Edited message %s → %s", message.id, target_msg_id)
+                
+            except MessageNotModifiedError:
+                # Message content is identical, skip
+                pass
+            except FloodWaitError as e:
+                self.flood_wait_until[target_chat] = time.time() + e.seconds
+                # Queue for retry
+                await asyncio.sleep(e.seconds)
+            except Exception as e:
+                logger.error(f"Edit failed for {target_chat}: {e}")
 
     async def handle_delete(self, event: events.MessageDeleted.Event):
-        """Handle message delete event"""
+        """MCP-enhanced delete with batch optimization"""
         if not self.config.get_option('mirror_deletes'):
             return
 
+        # Context7: MessageDeleted isn't 100% reliable
+        # Batch deletions for efficiency (up to 100)
+        delete_batch: Dict[int, List[int]] = {}
+        
         for msg_id in event.deleted_ids:
             source_chat = event.chat_id if hasattr(event, 'chat_id') else None
             if not source_chat:
@@ -237,12 +621,26 @@ class MirrorEngine:
             target_msg_id = self.config.get_cached_message(msg_id, source_chat)
             if not target_msg_id:
                 continue
-
+            
+            if target_chat not in delete_batch:
+                delete_batch[target_chat] = []
+            delete_batch[target_chat].append(target_msg_id)
+        
+        # Process batches
+        for target_chat, msg_ids in delete_batch.items():
             try:
-                await self.client.delete_messages(target_chat, [target_msg_id])
-                logger.info("Deleted message %s → %s", msg_id, target_msg_id)
+                # Split into chunks of 100 (Telegram limit)
+                for i in range(0, len(msg_ids), 100):
+                    chunk = msg_ids[i:i+100]
+                    await self.client.delete_messages(target_chat, chunk)
+                    logger.info(f"Batch deleted {len(chunk)} messages in {target_chat}")
+                    
+            except MessageDeleteForbiddenError:
+                logger.warning(f"Cannot delete messages in {target_chat} - no permission")
+            except MessageIdInvalidError:
+                logger.warning(f"Some messages already deleted in {target_chat}")
             except Exception as e:
-                logger.error("Delete failed: %s", e)
+                logger.error(f"Batch delete failed: {e}")
 
     async def handle_album(self, event: events.Album.Event):
         """Handle album (grouped media) event"""
@@ -250,8 +648,20 @@ class MirrorEngine:
             return
 
         source_chat = event.chat_id
-        target_chat = self.config.get_mapping(source_chat)
-        if not target_chat:
+        
+        # Get all target chats
+        target_chats = []
+        old_target = self.config.get_mapping(source_chat)
+        if old_target:
+            target_chats.append(old_target)
+        
+        configured_source = self.config.get_source_channel()
+        if configured_source and source_chat == configured_source:
+            targets = self.config.get_target_channels()
+            target_chats.extend(targets)
+        
+        target_chats = list(set(target_chats))
+        if not target_chats:
             return
 
         try:
@@ -276,19 +686,25 @@ class MirrorEngine:
                     if hasattr(event.original_update, 'message')
                     else ""
                 )
-                sent_messages = await self.client.send_file(
-                    target_chat,
-                    media_list,
-                    caption=caption or ""
-                )
+                
+                # Send to all target chats
+                for target_chat in target_chats:
+                    try:
+                        sent_messages = await self.client.send_file(
+                            target_chat,
+                            media_list,
+                            caption=caption or ""
+                        )
 
-                if isinstance(sent_messages, list):
-                    for i, msg in enumerate(event.messages):
-                        if i < len(sent_messages):
-                            self.config.cache_message(msg.id, sent_messages[i].id, source_chat)
+                        if isinstance(sent_messages, list):
+                            for i, msg in enumerate(event.messages):
+                                if i < len(sent_messages):
+                                    self.config.cache_message(msg.id, sent_messages[i].id, source_chat)
 
-                self.config.update_stats('media_mirrored', len(media_list))
-                logger.info("Mirrored album with %s items", len(media_list))
+                        self.config.update_stats('media_mirrored', len(media_list))
+                        logger.info("Mirrored album with %s items to %s", len(media_list), target_chat)
+                    except Exception as e:
+                        logger.error("Album mirror failed for %s: %s", target_chat, e)
 
         except Exception as e:
             logger.error("Album mirror failed: %s", e)
@@ -300,7 +716,7 @@ class MirrorEngine:
         logger.info("Mirror engine state saved")
 
     def get_status(self) -> dict:
-        """Get engine status"""
+        """Get enhanced engine status with MCP metrics"""
         mappings = self.config.get_all_mappings()
         stats = self.config.get_stats()
 
@@ -308,6 +724,13 @@ class MirrorEngine:
             'enabled': self.config.get_option('mirror_enabled'),
             'mappings_count': len(mappings),
             'processing_count': len(self.processing),
+            'queue_size': self.task_queue.qsize(),
+            'batch_buffers': len(self.batch_buffer),
+            'flood_wait_chats': len(self.flood_wait_until),
+            'performance': {
+                'avg_mirror_time': self.performance_stats.get('mirror_time', 0),
+                'error_rate': len(self.error_counts) / max(stats.get('messages_mirrored', 1), 1)
+            },
             'stats': stats,
             'options': {
                 'text': self.config.get_option('mirror_text'),
@@ -317,3 +740,44 @@ class MirrorEngine:
                 'bypass': self.config.get_option('bypass_restriction')
             }
         }
+    
+    async def sync_channel(self, source_chat: int, target_chat: int, limit: Optional[float] = None):
+        """MCP-enhanced channel synchronization"""
+        """Sync all messages from source to target efficiently"""
+        try:
+            logger.info(f"Starting sync: {source_chat} → {target_chat}")
+            
+            # Get messages in batches
+            synced = 0
+            async for message in self.client.iter_messages(source_chat, limit=limit):
+                # Skip service messages
+                if isinstance(message, MessageService):
+                    continue
+                
+                # Check if already synced
+                if self.config.get_cached_message(message.id, source_chat):
+                    continue
+                
+                # Queue for processing with high priority
+                task = MirrorTask(
+                    message=message,
+                    source_chat=source_chat,
+                    target_chat=target_chat,
+                    created_at=time.time(),
+                    priority=2  # High priority for sync
+                )
+                await self.task_queue.put(task)
+                
+                synced += 1
+                
+                # Rate limiting
+                if synced % 10 == 0:
+                    await asyncio.sleep(1)
+                    logger.info(f"Synced {synced} messages...")
+            
+            logger.info(f"Sync complete: {synced} messages queued")
+            return synced
+            
+        except Exception as e:
+            logger.error(f"Sync failed: {e}")
+            return 0

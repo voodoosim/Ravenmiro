@@ -1,3 +1,48 @@
+# Environment and config
 /.env
-/.mypy_cache
+.env.local
+*.env
+
+# IDE and tools
 /.vscode
+/.idea
+*.swp
+*.swo
+*~
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+/.mypy_cache
+/.pytest_cache
+/.ruff_cache
+
+# Logs and data
+/data/bot.log
+/data/error.log
+/data/settings.json
+*.log
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Session files
+*.session
+*.session-journal

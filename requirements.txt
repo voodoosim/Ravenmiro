@@ -4,3 +4,4 @@ cryptg>=0.4.0  # Speed up encryption
 python-dotenv>=1.0.0  # Environment variables
 aiofiles>=23.0.0  # Async file operations
 colorama>=0.4.6  # Colored terminal output
+psutil>=7.0.0  # System monitoring
